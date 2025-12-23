@@ -13,7 +13,7 @@ export default function Home() {
         const data = await res.json();
         
         if (data.s === true) {
-          // window.location.href = "https://app.eliro.pro";
+          window.location.href = "https://app.eliro.pro";
           return; // Keep loading state true while redirecting
         }
         
