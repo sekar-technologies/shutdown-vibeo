@@ -1,11 +1,36 @@
 import { NextResponse } from "next/server";
 import { headers } from "next/headers";
 
+interface VPNAPIResponse {
+  ip?: string;
+  security?: {
+    vpn: boolean;
+    proxy: boolean;
+    tor: boolean;
+    relay: boolean;
+  };
+  location?: {
+    city: string;
+    region: string;
+    country: string;
+    continent: string;
+    region_code: string;
+    country_code: string;
+    continent_code: string;
+    latitude: string;
+    longitude: string;
+    time_zone: string;
+    locale_code: string;
+    metro_code: string;
+    is_in_european_union: boolean;
+  };
+}
+
 export async function GET() {
   try {
     console.log("IP Check API called");
     const headerList = await headers();
-    
+
     const ipAddress =
       headerList.get("x-forwarded-for")?.split(",")[0] ||
       headerList.get("x-real-ip") ||
@@ -16,28 +41,61 @@ export async function GET() {
       return NextResponse.json({ success: true, s: true });
     }
 
-    const response = await fetch(`http://ip-api.com/json/${ipAddress}?fields=status,continentCode,country,proxy`);
-    
-    if (!response.ok) {
-      throw new Error("Failed to fetch location data");
+    // --- STEP 1: Check with ip-api.com ---
+    const ipApiResponse = await fetch(
+      `http://ip-api.com/json/${ipAddress}?fields=status,continentCode,country,proxy`
+    );
+
+    if (!ipApiResponse.ok) {
+      console.error("ip-api.com failed");
+    } else {
+      const ipApiData = await ipApiResponse.json();
+      console.log(`[ip-api.com] IP: ${ipAddress}, Country: ${ipApiData.country}, Continent: ${ipApiData.continentCode}, Proxy: ${ipApiData.proxy}`);
+
+      // If continent is Asia (AS) OR it's a proxy according to ip-api, block immediately
+      if (
+        ipApiData.status === "success" &&
+        (ipApiData.continentCode === "AS" || ipApiData.proxy === true)
+      ) {
+        return NextResponse.json({ success: true, s: false });
+      }
     }
 
-    const data = await response.json();
+    // --- STEP 2: Secondary check with vpnapi.io if Step 1 passed ---
+    const vpnApiKey = process.env.VPNAPI_KEY;
+    if (vpnApiKey) {
+      try {
+        const vpnApiResponse = await fetch(
+          `https://vpnapi.io/api/${ipAddress}?key=${vpnApiKey}`
+        );
 
-    // Server-side logging as requested
-    console.log(`[IP Check] IP: ${ipAddress}, Country: ${data.country}, Continent: ${data.continentCode}, Proxy: ${data.proxy}`);
+        if (vpnApiResponse.ok) {
+          const vpnData: VPNAPIResponse = await vpnApiResponse.json();
+          console.log("[vpnapi.io] Data: ", vpnData);
 
-    // If continent is Asia (AS) OR it's a proxy, return s: false (Shutdown UI)
-    if (data.status === "success" && (data.continentCode === "AS" || data.proxy === true)) {
-      return NextResponse.json({ success: true, s: false });
+          const isSecurityRisk =
+            vpnData.security?.vpn ||
+            vpnData.security?.proxy ||
+            vpnData.security?.tor ||
+            vpnData.security?.relay;
+
+          if (isSecurityRisk) {
+            console.log(`[vpnapi.io] Security risk detected for IP: ${ipAddress}`);
+            return NextResponse.json({ success: true, s: false });
+          }
+        }
+      } catch (vpnError) {
+        console.error("vpnapi.io check failed: ", vpnError);
+      }
+    } else {
+      console.warn("VPNAPI_KEY is not set. Skipping secondary VPN check.");
     }
 
-    // Otherwise return s: true (Redirect)
+    // If both checks pass (or secondary is skipped), allow the user
     return NextResponse.json({ success: true, s: true });
-    
   } catch (error) {
     console.error("IP validation error:", error);
-    // Fallback to s: true on error
+    // Fallback to allow on error
     return NextResponse.json({ success: true, s: true });
   }
 }
